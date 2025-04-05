@@ -3,7 +3,7 @@ import json
 from django.views.decorators.csrf import csrf_exempt
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils.timezone import now
-from django.db.models import Max, Sum, Count
+from django.db.models import Max, Sum,Count
 from apps.pesagem.models import Pesagem
 from apps.colaborador.models import Colaborador
 from apps.veiculo.models import Veiculo
@@ -18,11 +18,11 @@ def criar_pesagem(request):
 
             required_fields = [
                 'data', 'prefixo_id', 'motorista_id', 'cooperativa_id',
-                'hora_chegada', 'hora_saida', 'numero_doc', 'volume_carga'
+                'hora_chegada', 'hora_saida', 'numero_doc', 'volume_carga', 'tipo_pesagem'
             ]
             for field in required_fields:
                 if field not in data:
-                    return JsonResponse({"error": f"EXISTE CAMPO FALATANDO: {field}"}, status=400)
+                    return JsonResponse({"error": f"Campo obrigatório faltando: {field}"}, status=400)
 
             try:
                 veiculo = Veiculo.objects.get(id=data['prefixo_id'])
@@ -30,20 +30,20 @@ def criar_pesagem(request):
                 cooperativa = Cooperativa.objects.get(id=data['cooperativa_id'])
                 colaboradores = Colaborador.objects.filter(id__in=data.get('colaborador_id', []))
             except ObjectDoesNotExist:
-                return JsonResponse({"error": "VEICULO, OU MOTORISTA E CORPORATIVA NÃO ACHADA"}, status=404)
+                return JsonResponse({"error": "Veículo, motorista ou cooperativa não encontrados."}, status=404)
 
             pesagem = Pesagem(
                 data=data.get('data', now().date()),
                 prefixo_id=veiculo,
                 cooperativa_id=cooperativa,
-                responsavel_coop=data.get('responsavel_coop', None),
+                responsavel_coop=data.get('responsavel_coop'),
                 motorista_id=motorista,
                 hora_chegada=data['hora_chegada'],
                 hora_saida=data['hora_saida'],
                 numero_doc=data['numero_doc'],
                 volume_carga=data['volume_carga'],
+                tipo_pesagem=data['tipo_pesagem']
             )
-
             pesagem.peso_calculado = pesagem.calcular_peso()
             pesagem.save()
             pesagem.colaborador_id.set(colaboradores)
@@ -62,57 +62,61 @@ def criar_pesagem(request):
                 "numero_doc": pesagem.numero_doc,
                 "volume_carga": pesagem.volume_carga,
                 "peso_calculado": float(pesagem.peso_calculado),
+                "tipo_pesagem": pesagem.tipo_pesagem,
             }, status=201)
 
         except json.JSONDecodeError:
-            return JsonResponse({"error": "O JSON TA ERRADO "}, status=400)
+            return JsonResponse({"error": "JSON inválido."}, status=400)
+        except Exception as e:
+            return JsonResponse({"error": f"Erro interno: {str(e)}"}, status=500)
 
-    return JsonResponse({"error": "DEU RUIM"}, status=405)
+    return JsonResponse({"error": "Método não permitido."}, status=405)
+
+
+@csrf_exempt
+def quantidade_de_pesagens(request):
+    if request.method == 'GET':
+        total_pesagens = Pesagem.objects.count()
+        return JsonResponse({"quantidade_de_pesagens": total_pesagens}, status=200)
+    return JsonResponse({"error": "Método não permitido."}, status=405)
+
+
+@csrf_exempt
+def quantidade_de_toneladas_pesadas(request):
+    if request.method == 'GET':
+        resultado = Pesagem.objects.aggregate(total_peso=Sum('peso_calculado'))
+        total_peso = resultado['total_peso'] or 0
+        return JsonResponse({"total_toneladas_pesadas": float(total_peso)}, status=200)
+    return JsonResponse({"error": "Método não permitido."}, status=405)
 
 
 @csrf_exempt
 def exibir_pesagem_por_mes(request):
     if request.method == 'GET':
         try:
-            maiores_pesagens_por_mes = (
+            pesagens_por_mes_tipo = (
                 Pesagem.objects
-                .values("data__year", "data__month")
-                .annotate(maior_peso=Max("peso_calculado"))
+                .values("data__year", "data__month", "tipo_pesagem")
+                .annotate(qtd=Count("id"), peso_total=Sum("peso_calculado"))
                 .order_by("-data__year", "-data__month")
             )
 
             resultado = []
-            for item in maiores_pesagens_por_mes:
-                ano = item["data__year"]
-                mes = item["data__month"]
-                maior_peso = item["maior_peso"]
+            for item in pesagens_por_mes_tipo:
+                resultado.append({
+                    "ano": item["data__year"],
+                    "mes": item["data__month"],
+                    "tipo_pesagem": item["tipo_pesagem"],
+                    "quantidade_pesagens": item["qtd"],
+                    "peso_total": float(item["peso_total"] or 0),
+                })
 
-                maior_pesagem = Pesagem.objects.filter(
-                    data__year=ano, data__month=mes, peso_calculado=maior_peso
-                ).first()
-
-                if maior_pesagem:
-                    resultado.append({
-                        "ano": ano,
-                        "mes": mes,
-                        "id": maior_pesagem.id,
-                        "data": maior_pesagem.data.strftime('%Y-%m-%d'),
-                        "prefixo_id": maior_pesagem.prefixo_id.id,
-                        "tipo_veiculo": maior_pesagem.prefixo_id.tipo,
-                        "motorista_id": maior_pesagem.motorista_id.id,
-                        "cooperativa_id": maior_pesagem.cooperativa_id.id,
-                        "numero_doc": maior_pesagem.numero_doc,
-                        "volume_carga": maior_pesagem.volume_carga,
-                        "peso_calculado": float(maior_pesagem.peso_calculado),
-                    })
-
-            return JsonResponse({"maiores_pesagens_por_mes": resultado}, status=200)
+            return JsonResponse({"pesagens_por_mes_tipo": resultado}, status=200)
 
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
+            return JsonResponse({"error": f"Erro ao processar: {str(e)}"}, status=500)
 
-    return JsonResponse({"error": "DEU RUIM"}, status=405)
-
+    return JsonResponse({"error": "Método não permitido."}, status=405)
 
 @csrf_exempt
 def meta_batida(request):
@@ -129,158 +133,214 @@ def meta_batida(request):
             }, status=200)
 
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
+            return JsonResponse({"error": f"Erro ao calcular meta: {str(e)}"}, status=500)
 
-    return JsonResponse({"error": "DEU RUIM"}, status=405)
-
+    return JsonResponse({"error": "Método não permitido."}, status=405)
 
 @csrf_exempt
-def ranking_motoristas_com_maiores_pesagens(request):
+def def_pesagens_seletiva(request):
     if request.method == 'GET':
         try:
-            motoristas_ativos = (
-                Colaborador.objects
-                .filter(funcao='Motorista', status='ATIVO')
-            )
-
-            ranking = (
-                Pesagem.objects
-                .filter(motorista_id__in=motoristas_ativos)
-                .values('motorista_id', 'motorista_id__nome')
-                .annotate(
-                    peso_total=Sum('peso_calculado'),
-                    quantidade_pesagens=Count('id')
-                )
-                .order_by('-peso_total')
-            )
-
-            resultado = [
-                {
-                    "motorista": item['motorista_id__nome'],
-                    "peso_total": round(item['peso_total'], 2) if item['peso_total'] else 0.0,
-                    "quantidade_pesagens": item['quantidade_pesagens']
-                }
-                for item in ranking
-            ]
-
-            return JsonResponse({"ranking_motoristas": resultado}, status=200)
-
+            total_seletiva = Pesagem.objects.filter(tipo_pesagem='SELETIVA').count()
+            return JsonResponse({"total_pesagens_seletiva": total_seletiva}, status=200)
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
+            return JsonResponse({"error": f"erro ao contar pesagens seletivas: {str(e)}"}, status=500)
 
-    return JsonResponse({"error": "DEU RUIM"}, status=405)
-
+    return JsonResponse({"error": "metodo nao permitido"}, status=405)
 
 @csrf_exempt
-def ranking_cooperativas_com_maiores_pesagens(request):
+def def_pesagens_cata_treco(request):
     if request.method == 'GET':
         try:
-            ranking = (
-                Pesagem.objects
-                .values('cooperativa_id', 'cooperativa_id__nome')
-                .annotate(
-                    peso_total=Sum('peso_calculado'),
-                    quantidade_pesagens=Count('id')
-                )
-                .order_by('-peso_total')
-            )
-
-            resultado = [
-                {
-                    "cooperativa": item['cooperativa_id__nome'],
-                    "peso_total": round(item['peso_total'], 2) if item['peso_total'] else 0.0,
-                    "quantidade_pesagens": item['quantidade_pesagens']
-                }
-                for item in ranking
-            ]
-
-            return JsonResponse({"ranking_cooperativas": resultado}, status=200)
-
+            total_cata_treco = Pesagem.objects.filter(tipo_pesagem='CATA TRECO').count()
+            return JsonResponse({"total_pesagens_cata_treco": total_cata_treco}, status=200)
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
+            return JsonResponse({"error": f"Erro ao contar pesagens cata treco: {str(e)}"}, status=500)
 
-    return JsonResponse({"error": "DEU RUIM"}, status=405)
-
+    return JsonResponse({"error": "Método não permitido"}, status=405)
 
 @csrf_exempt
-def media_peso_por_cooperativa(request):
+def def_pesagens_ao_longo_ano_por_tipo_pesagem(request):
     if request.method == 'GET':
         try:
-            media = (
+            from django.db.models.functions import ExtractMonth, ExtractYear
+            dados = (
                 Pesagem.objects
-                .values('cooperativa_id__nome')
+                .annotate(ano=ExtractYear('data'), mes=ExtractMonth('data'))
+                .values('ano', 'mes', 'tipo_pesagem')
+                .annotate(total=Count('id'))
+                .order_by('ano', 'mes')
+            )
+            resultado = {}
+            for item in dados:
+                ano = item['ano']
+                mes = item['mes']
+                tipo = item['tipo_pesagem']
+                total = item['total']
+                chave = f"{ano}-{mes:02d}"
+                if chave not in resultado:
+                    resultado[chave] = {
+                        'total_geral': 0,
+                        'SELETIVA': 0,
+                        'CATA TRECO': 0,
+                        'OUTROS': 0
+                    }
+                resultado[chave]['total_geral'] += total
+                if tipo == 'SELETIVA':
+                    resultado[chave]['SELETIVA'] += total
+                elif tipo == 'CATA TRECO':
+                    resultado[chave]['CATA TRECO'] += total
+                else:
+                    resultado[chave]['OUTROS'] += total
+            return JsonResponse({"pesagens_ao_longo_ano": resultado}, status=200)
+        except Exception as e:
+            return JsonResponse({"error": f"Erro ao calcular pesagens por tipo: {str(e)}"}, status=500)
+    return JsonResponse({"error": "Método não permitido"}, status=405)
+
+@csrf_exempt
+def topo_5_coperativas_por_pesagem(request):
+    if request.method == 'GET':
+        try:
+            total_pesagens = Pesagem.objects.count()
+            if total_pesagens == 0:
+                return JsonResponse({"message": "Nenhuma pesagem encontrada."}, status=200)
+            cooperativas = (
+                Pesagem.objects
+                .values('cooperativa_id__nome') 
+                .annotate(total=Count('id'))
+                .order_by('-total')[:5]
+            )
+            resultado = []
+            for item in cooperativas:
+                nome = item['cooperativa_id__nome']
+                total = item['total']
+                porcentagem = round((total / total_pesagens) * 100, 2)
+                resultado.append({
+                    "cooperativa": nome,
+                    "total_pesagens": total,
+                    "porcentagem": f"{porcentagem}%",
+                })
+            return JsonResponse({"top_5_cooperativas": resultado}, status=200)
+        except Exception as e:
+            return JsonResponse({"error": f"Erro ao buscar cooperativas: {str(e)}"}, status=500)
+    return JsonResponse({"error": "Método não permitido"}, status=405)
+
+@csrf_exempt
+def veiculo_maior_pesagens(request):
+    if request.method == 'GET':
+        try:
+            # agrupar por veículo  e contar numero de pesagens
+            veiculo = (
+                Pesagem.objects
+                .values('prefixo_id__prefixo', 'prefixo_id__tipo')
+                .annotate(total_pesagens=Count('id'))
+                .order_by('-total_pesagens')
+                .first()
+            )
+            if not veiculo:
+                return JsonResponse({"message": "Nenhuma pesagem encontrada."}, status=200)
+
+            resultado = {
+                "prefixo": veiculo['prefixo_id__prefixo'],
+                "tipo_veiculo": veiculo['prefixo_id__tipo'],
+                "quantidade_de_pesagens": veiculo['total_pesagens']
+            }
+            return JsonResponse({"veiculo_com_mais_pesagens": resultado}, status=200)
+        except Exception as e:
+            return JsonResponse({"error": f"Erro ao buscar veículo: {str(e)}"}, status=500)
+    return JsonResponse({"error": "Método não permitido"}, status=405)
+
+@csrf_exempt
+def eficiencia_motoristas(request):
+    if request.method == 'GET':
+        try:
+            motoristas = (
+                Pesagem.objects
+                .values('motorista_id__id', 'motorista_id__nome')  
                 .annotate(
-                    media_peso=Sum('peso_calculado') / Count('id'),
+                    total_volume=Sum('volume_carga'),
                     total_pesagens=Count('id')
                 )
-                .order_by('-media_peso')
             )
+            for m in motoristas:
+                m['media_volume'] = m['total_volume'] / m['total_pesagens'] if m['total_pesagens'] else 0
+            maior_media = max([m['media_volume'] for m in motoristas], default=1)
+            resultado = []
+            for m in motoristas:
+                eficiencia_pct = round((m['media_volume'] / maior_media) * 100, 2) if maior_media else 0
 
-            resultado = [
-                {
-                    "cooperativa": item['cooperativa_id__nome'],
-                    "media_peso": round(item['media_peso'], 2),
-                    "total_pesagens": item['total_pesagens']
-                }
-                for item in media
-            ]
-
-            return JsonResponse({"media_por_cooperativa": resultado}, status=200)
-
+                resultado.append({
+                    'motorista_id': m['motorista_id__id'],
+                    'nome': m['motorista_id__nome'],
+                    'total_volume': m['total_volume'],
+                    'total_pesagens': m['total_pesagens'],
+                    'eficiencia_percentual': eficiencia_pct,
+                })
+            resultado.sort(key=lambda x: x['eficiencia_percentual'], reverse=True)
+            return JsonResponse({'eficiencia_motoristas': resultado}, status=200)
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
-
-    return JsonResponse({"error": "DEU RUIM"}, status=405)
-
+            return JsonResponse({"error": f"Erro ao calcular eficiência: {str(e)}"}, status=500)
+    return JsonResponse({"error": "Método não permitido"}, status=405)
 
 @csrf_exempt
-def eficiencia_por_motorista(request):
+def eficiencia_veiculos(request):
     if request.method == 'GET':
         try:
-            eficiencia = (
+            veiculos = (
                 Pesagem.objects
-                .values('motorista_id__nome')
+                .values('prefixo_id__id', 'prefixo_id__prefixo')
                 .annotate(
-                    peso_total=Sum('peso_calculado'),
-                    quantidade=Count('id'),
-                    media_por_viagem=Sum('peso_calculado') / Count('id')
+                    total_volume=Sum('volume_carga'),
+                    total_pesagens=Count('id')
                 )
-                .order_by('-media_por_viagem')
             )
-
-            resultado = [
-                {
-                    "motorista": item['motorista_id__nome'],
-                    "media_por_viagem": round(item['media_por_viagem'], 2),
-                    "viagens": item['quantidade'],
-                    "peso_total": round(item['peso_total'], 2)
-                }
-                for item in eficiencia
-            ]
-            return JsonResponse({"eficiencia_motoristas": resultado}, status=200)
+            for v in veiculos:
+                v['media_volume'] = v['total_volume'] / v['total_pesagens'] if v['total_pesagens'] else 0
+            maior_media = max([v['media_volume'] for v in veiculos], default=1)
+            resultado = []
+            for v in veiculos:
+                eficiencia_pct = round((v['media_volume'] / maior_media) * 100, 2) if maior_media else 0
+                resultado.append({
+                    'veiculo_id': v['prefixo_id__id'],
+                    'prefixo': v['prefixo_id__prefixo'],
+                    'total_volume': v['total_volume'],
+                    'total_pesagens': v['total_pesagens'],
+                    'eficiencia_percentual': eficiencia_pct,
+                })
+            resultado.sort(key=lambda x: x['eficiencia_percentual'], reverse=True)
+            return JsonResponse({'eficiencia_veiculos': resultado}, status=200)
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
-    return JsonResponse({"error": "DEU RUIM"}, status=405)
+            return JsonResponse({"error": f"Erro ao calcular eficiência: {str(e)}"}, status=500)
+    return JsonResponse({"error": "Método não permitido"}, status=405)
+
 
 @csrf_exempt
-def tipos_pesagem_mais_frequentes(request):
+def eficiencia_cooperativas(request):
     if request.method == 'GET':
         try:
-            tipos_pesagem = (
+            cooperativas = (
                 Pesagem.objects
-                .values('tipo_pesagem')
-                .annotate(quantidade=Count('id'))
-                .order_by('-quantidade')
+                .values('cooperativa_id__id', 'cooperativa_id__nome')
+                .annotate(
+                    total_volume=Sum('volume_carga'),
+                    total_pesagens=Count('id')
+                )
             )
-
-            tipo_mais_usado = tipos_pesagem[0] if tipos_pesagem else None
-
-            return JsonResponse({
-                "tipos_pesagem": list(tipos_pesagem),
-                "tipo_mais_utilizado": tipo_mais_usado
-            }, status=200)
-
+            for c in cooperativas:
+                c['media_volume'] = c['total_volume'] / c['total_pesagens'] if c['total_pesagens'] else 0
+            maior_media = max([c['media_volume'] for c in cooperativas], default=1)
+            resultado = []
+            for c in cooperativas:
+                eficiencia_pct = round((c['media_volume'] / maior_media) * 100, 2) if maior_media else 0
+                resultado.append({
+                    'cooperativa_id': c['cooperativa_id__id'],
+                    'nome': c['cooperativa_id__nome'],
+                    'total_volume': c['total_volume'],
+                    'total_pesagens': c['total_pesagens'],
+                    'eficiencia_percentual': eficiencia_pct,
+                })
+            resultado.sort(key=lambda x: x['eficiencia_percentual'], reverse=True)
+            return JsonResponse({'eficiencia_cooperativas': resultado}, status=200)
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
-
+            return JsonResponse({"error": f"Erro ao calcular eficiência: {str(e)}"}, status=500)
     return JsonResponse({"error": "Método não permitido"}, status=405)
