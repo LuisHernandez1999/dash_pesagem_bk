@@ -41,7 +41,7 @@ INSTALLED_APPS = [
     'apps.colaborador',
     'apps.coperativa',
     'apps.pesagem',
-    'apps.veiculos'
+    'apps.veiculo',
 ]
 
 MIDDLEWARE = [
