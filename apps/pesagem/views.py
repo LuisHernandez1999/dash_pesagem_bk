@@ -2,12 +2,15 @@ from django.http import JsonResponse
 import json
 from django.views.decorators.csrf import csrf_exempt
 from django.core.exceptions import ObjectDoesNotExist
+from django.utils.timezone import localtime
 from django.utils.timezone import now
+from datetime import timedelta
 from django.db.models import Max, Sum,Count
 from apps.pesagem.models import Pesagem
 from apps.colaborador.models import Colaborador
 from apps.veiculo.models import Veiculo
 from apps.coperativa.models import Cooperativa
+from collections import defaultdict
 
 
 @csrf_exempt
@@ -94,24 +97,36 @@ def quantidade_de_toneladas_pesadas(request):
 def exibir_pesagem_por_mes(request):
     if request.method == 'GET':
         try:
-            pesagens_por_mes_tipo = (
-                Pesagem.objects
-                .values("data__year", "data__month", "tipo_pesagem")
-                .annotate(qtd=Count("id"), peso_total=Sum("peso_calculado"))
-                .order_by("-data__year", "-data__month")
-            )
+            pesagens = Pesagem.objects.all()
+            agrupado = defaultdict(lambda: {'quantidade': 0, 'peso_total': 0.0})
+
+            for p in pesagens:
+                data = localtime(p.data)  
+                tipo = p.tipo_pesagem
+                peso = p.peso_calculado or 0
+                if data.day >= 20:
+                    ref_ano = data.year
+                    ref_mes = data.month
+                else:
+                    anterior = data.replace(day=1) - timedelta(days=1)
+                    ref_ano = anterior.year
+                    ref_mes = anterior.month
+
+                chave = (ref_ano, ref_mes, tipo)
+                agrupado[chave]['quantidade'] += 1
+                agrupado[chave]['peso_total'] += peso
 
             resultado = []
-            for item in pesagens_por_mes_tipo:
+            for (ano, mes, tipo), valores in sorted(agrupado.items(), reverse=True):
                 resultado.append({
-                    "ano": item["data__year"],
-                    "mes": item["data__month"],
-                    "tipo_pesagem": item["tipo_pesagem"],
-                    "quantidade_pesagens": item["qtd"],
-                    "peso_total": float(item["peso_total"] or 0),
+                    "ano": ano,
+                    "mes_referencia": mes,
+                    "tipo_pesagem": tipo,
+                    "quantidade_pesagens": valores['quantidade'],
+                    "peso_total": round(valores['peso_total'], 2),
                 })
 
-            return JsonResponse({"pesagens_por_mes_tipo": resultado}, status=200)
+            return JsonResponse({"pesagens_por_periodo_personalizado": resultado}, status=200)
 
         except Exception as e:
             return JsonResponse({"error": f"Erro ao processar: {str(e)}"}, status=500)
