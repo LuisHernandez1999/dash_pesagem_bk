@@ -139,7 +139,7 @@ def meta_batida(request):
         try:
             meta = 2601.0  
             batida = Pesagem.objects.aggregate(total_peso=Sum('peso_calculado'))['total_peso'] or 0
-            porcentagem = (batida / meta) * 100 if meta > 0 else 0
+            porcentagem = (batida / 1000) / (meta / 1000) * 100 if meta > 0 else 0
 
             return JsonResponse({
                 "meta_toneladas": meta,
