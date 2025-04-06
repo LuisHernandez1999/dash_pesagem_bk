@@ -11,7 +11,6 @@ from .serializers import CooperativaSerializer
 @require_http_methods(["POST"])
 def criar_cooperativa(request):
     try:
-        # Valida se o body veio no formato JSON
         try:
             data = json.loads(request.body)
         except json.JSONDecodeError:

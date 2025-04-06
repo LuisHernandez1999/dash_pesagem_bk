@@ -213,7 +213,7 @@ def def_pesagens_ao_longo_ano_por_tipo_pesagem(request):
     return JsonResponse({"error": "Método não permitido"}, status=405)
 
 @csrf_exempt
-def topo_5_coperativas_por_pesagem(request):
+def top_5_coperativas_por_pesagem(request):
     if request.method == 'GET':
         try:
             total_pesagens = Pesagem.objects.count()
@@ -244,7 +244,6 @@ def topo_5_coperativas_por_pesagem(request):
 def veiculo_maior_pesagens(request):
     if request.method == 'GET':
         try:
-            # agrupar por veículo  e contar numero de pesagens
             veiculo = (
                 Pesagem.objects
                 .values('prefixo_id__prefixo', 'prefixo_id__tipo')
@@ -254,7 +253,6 @@ def veiculo_maior_pesagens(request):
             )
             if not veiculo:
                 return JsonResponse({"message": "Nenhuma pesagem encontrada."}, status=200)
-
             resultado = {
                 "prefixo": veiculo['prefixo_id__prefixo'],
                 "tipo_veiculo": veiculo['prefixo_id__tipo'],
